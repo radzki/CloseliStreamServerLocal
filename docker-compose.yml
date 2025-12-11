@@ -22,13 +22,14 @@ services:
     command: python3 local_relay_server.py
     restart: unless-stopped
     ports:
-      - "50721:50721"   # Relay port (cameras connect here)
-      - "50722:50722"   # Management CLI port
+      - "50721:50721" # Relay port (cameras connect here)
+      - "50722:50722" # Management CLI port
     volumes:
       - ./server.crt:/app/server.crt:ro
       - ./server.key:/app/server.key:ro
       - ./.env:/app/.env:ro
     environment:
+      - PYTHONUNBUFFERED=1
       - RELAY_HOST=0.0.0.0
       - LOCAL_IP=${LOCAL_IP:-192.168.1.100}
       - RELAY_PORT=50721
@@ -37,7 +38,7 @@ services:
     networks:
       - eoolii-net
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 50722)); s.close()"]
+      test: [ "CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 50722)); s.close()" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -48,12 +49,13 @@ services:
     command: python3 mock_api_server.py
     restart: unless-stopped
     ports:
-      - "443:443"       # HTTPS API port
+      - "443:443" # HTTPS API port
     volumes:
       - ./server.crt:/app/server.crt:ro
       - ./server.key:/app/server.key:ro
       - ./.env:/app/.env:ro
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_IP=${LOCAL_IP:-192.168.1.100}
       - RELAY_PORT=50721
       - MGMT_PORT=50722
@@ -73,19 +75,15 @@ services:
     build: .
     container_name: eoolii-stream-camera1
     command: >
-      python3 stream_server.py
-      --device_id ${CAMERA1_DEVICE_ID:-xxxxS_000000000001}
-      --port 8081
-      --relay_host relay
-      --relay_port 50721
+      python3 stream_server.py --device_id ${CAMERA1_DEVICE_ID:-xxxxS_000000000001} --port 8081 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera1
       - all-cameras
     ports:
-      - "8081:8081"     # Video: http://localhost:8081/camera/video
+      - "8081:8081" # Video: http://localhost:8081/camera/video
     environment:
-      - LOCAL_IP=relay  # Connect to relay container
+      - LOCAL_IP=relay # Connect to relay container
       - RELAY_PORT=50721
       - HTTP_PORT=8081
       - USER_EMAIL=${USER_EMAIL:-user@example.com}
@@ -100,17 +98,13 @@ services:
     build: .
     container_name: eoolii-stream-camera2
     command: >
-      python3 stream_server.py
-      --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002}
-      --port 8082
-      --relay_host relay
-      --relay_port 50721
+      python3 stream_server.py --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002} --port 8082 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera2
       - all-cameras
     ports:
-      - "8082:8082"     # Video: http://localhost:8082/camera/video
+      - "8082:8082" # Video: http://localhost:8082/camera/video
     environment:
       - LOCAL_IP=relay
       - RELAY_PORT=50721
@@ -127,11 +121,7 @@ services:
     build: .
     container_name: eoolii-stream-camera3
     command: >
-      python3 stream_server.py
-      --device_id ${CAMERA3_DEVICE_ID:-xxxxS_000000000003}
-      --port 8083
-      --relay_host relay
-      --relay_port 50721
+      python3 stream_server.py --device_id ${CAMERA3_DEVICE_ID:-xxxxS_000000000003} --port 8083 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera3
@@ -154,11 +144,7 @@ services:
     build: .
     container_name: eoolii-stream-camera4
     command: >
-      python3 stream_server.py
-      --device_id ${CAMERA4_DEVICE_ID:-xxxxS_000000000004}
-      --port 8084
-      --relay_host relay
-      --relay_port 50721
+      python3 stream_server.py --device_id ${CAMERA4_DEVICE_ID:-xxxxS_000000000004} --port 8084 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera4
