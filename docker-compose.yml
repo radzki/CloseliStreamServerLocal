@@ -19,7 +19,7 @@ services:
   relay:
     build: .
     container_name: eoolii-relay
-    command: python3 local_relay_server.py
+    command: python3 -u local_relay_server.py
     restart: unless-stopped
     ports:
       - "50721:50721" # Relay port (cameras connect here)
@@ -46,7 +46,7 @@ services:
   api:
     build: .
     container_name: eoolii-api
-    command: python3 mock_api_server.py
+    command: python3 -u mock_api_server.py
     restart: unless-stopped
     ports:
       - "443:443" # HTTPS API port
