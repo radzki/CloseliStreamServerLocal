@@ -75,7 +75,7 @@ services:
     build: .
     container_name: eoolii-stream-camera1
     command: >
-      python3 stream_server.py --device_id ${CAMERA1_DEVICE_ID:-xxxxS_000000000001} --port 8081 --relay_host relay --relay_port 50721
+      python3 -u stream_server.py --device_id ${CAMERA1_DEVICE_ID:-xxxxS_000000000001} --port 8081 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera1
@@ -83,6 +83,7 @@ services:
     ports:
       - "8081:8081" # Video: http://localhost:8081/camera/video
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_IP=relay # Connect to relay container
       - RELAY_PORT=50721
       - HTTP_PORT=8081
@@ -98,7 +99,7 @@ services:
     build: .
     container_name: eoolii-stream-camera2
     command: >
-      python3 stream_server.py --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002} --port 8082 --relay_host relay --relay_port 50721
+      python3 -ustream_server.py --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002} --port 8082 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera2
@@ -106,6 +107,7 @@ services:
     ports:
       - "8082:8082" # Video: http://localhost:8082/camera/video
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_IP=relay
       - RELAY_PORT=50721
       - HTTP_PORT=8082
@@ -121,7 +123,7 @@ services:
     build: .
     container_name: eoolii-stream-camera3
     command: >
-      python3 stream_server.py --device_id ${CAMERA3_DEVICE_ID:-xxxxS_000000000003} --port 8083 --relay_host relay --relay_port 50721
+      python3 -u stream_server.py --device_id ${CAMERA3_DEVICE_ID:-xxxxS_000000000003} --port 8083 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera3
@@ -129,6 +131,7 @@ services:
     ports:
       - "8083:8083"
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_IP=relay
       - RELAY_PORT=50721
       - HTTP_PORT=8083
@@ -144,7 +147,7 @@ services:
     build: .
     container_name: eoolii-stream-camera4
     command: >
-      python3 stream_server.py --device_id ${CAMERA4_DEVICE_ID:-xxxxS_000000000004} --port 8084 --relay_host relay --relay_port 50721
+      python3 -u stream_server.py --device_id ${CAMERA4_DEVICE_ID:-xxxxS_000000000004} --port 8084 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera4
@@ -152,6 +155,7 @@ services:
     ports:
       - "8084:8084"
     environment:
+      - PYTHONUNBUFFERED=1
       - LOCAL_IP=relay
       - RELAY_PORT=50721
       - HTTP_PORT=8084
