@@ -1,4 +1,4 @@
-# Eoolii Camera Local Streaming
+# Closeli Camera Local Streaming
 
 A reverse-engineered local streaming solution for Eoolii/Closeli IP cameras. This project bypasses the cloud dependency and enables fully local, peer-to-peer streaming without internet access.
 
@@ -299,3 +299,4 @@ This project is for educational and research purposes only. Use responsibly and 
 ## Acknowledgments
 
 This project was developed through reverse engineering of the Eoolii camera protocol. Special thanks to the security research community for tools and techniques that made this possible.
+
