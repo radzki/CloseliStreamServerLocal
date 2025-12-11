@@ -154,8 +154,7 @@ services:
   cli:
     build: .
     container_name: eoolii-cli
-    entrypoint: python3
-    command: relay_cli.py status
+    entrypoint: ["python3", "-u", "relay_cli.py"]
     network_mode: host
     profiles:
       - cli
