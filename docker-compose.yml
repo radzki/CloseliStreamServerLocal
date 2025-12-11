@@ -99,7 +99,7 @@ services:
     build: .
     container_name: eoolii-stream-camera2
     command: >
-      python3 -ustream_server.py --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002} --port 8082 --relay_host relay --relay_port 50721
+      python3 -u stream_server.py --device_id ${CAMERA2_DEVICE_ID:-xxxxS_000000000002} --port 8082 --relay_host relay --relay_port 50721
     restart: unless-stopped
     profiles:
       - camera2
