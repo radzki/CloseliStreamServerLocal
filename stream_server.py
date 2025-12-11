@@ -242,27 +242,42 @@ class StreamBroadcaster:
     def __init__(self):
         self.listeners = []
         self.lock = threading.Lock()
+        self.broadcast_count = 0
+        self.log_interval = 100  # Log queue sizes every N broadcasts
 
     def add_listener(self):
         q = queue.Queue(maxsize=100) # Buffer ~3 seconds of audio (320 bytes * 100 packets)
         with self.lock:
             self.listeners.append(q)
+        print(f"[AUDIO] Listener added. Total listeners: {len(self.listeners)}")
         return q
 
     def remove_listener(self, q):
         with self.lock:
             if q in self.listeners:
                 self.listeners.remove(q)
+        print(f"[AUDIO] Listener removed. Total listeners: {len(self.listeners)}")
 
     def broadcast(self, data):
         with self.lock:
+            self.broadcast_count += 1
+            dropped_count = 0
+            queue_sizes = []
+
             for q in self.listeners:
+                queue_sizes.append(q.qsize())
                 try:
                     q.put_nowait(data)
                 except queue.Full:
                     # If client is too slow, we might drop data or drop client
                     # For now just drop packet for that client (glitch)
-                    pass
+                    dropped_count += 1
+
+            # Log queue sizes periodically
+            if self.broadcast_count % self.log_interval == 0 and self.listeners:
+                sizes_str = ', '.join(f'{s}/100' for s in queue_sizes)
+                print(f"[AUDIO] Broadcast #{self.broadcast_count}: {len(self.listeners)} listeners, queue sizes: [{sizes_str}]" +
+                      (f", dropped: {dropped_count}" if dropped_count else ""))
 
 audio_broadcaster = StreamBroadcaster()
 
