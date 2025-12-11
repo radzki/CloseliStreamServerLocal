@@ -617,17 +617,10 @@ class LocalRelayServer:
 
             device_id = DEFAULT_DEVICE_ID
             
-            # Resolve correct IP for Peer Hint
-            try:
-                server_ip, server_port = conn.getsockname()
-                # If we bound to 0.0.0.0, getsockname might return 0.0.0.0.
-                # But usually for a connected socket it returns the interface IP.
-                # Fallback just in case.
-                if server_ip == "0.0.0.0":
-                    server_ip = LOCAL_IP # Hardcoded fallback based on logs
-            except:
-                server_ip = LOCAL_IP
-                server_port = RELAY_PORT
+            # Always use LOCAL_IP for Peer Hint - this is the externally reachable IP
+            # getsockname() returns Docker internal IPs which clients can't reach
+            server_ip = LOCAL_IP
+            server_port = RELAY_PORT
                 
             log(f"Peer Hint Configured: {server_ip}:{server_port}", "INFO")
 
