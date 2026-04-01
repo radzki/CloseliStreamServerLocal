@@ -27,7 +27,7 @@ services:
       - NET_ADMIN
       - NET_RAW
     environment:
-      - CAMERA_IP=${CAMERA_IP:-192.168.15.21}
+      - CAMERA_IPS=${CAMERA_IPS:-${CAMERA_IP:-192.168.15.21}}
       - LOCAL_IP=${LOCAL_IP:-192.168.15.15}
       - IFACE=${IFACE:-eth0}
       - GATEWAY_IP=${GATEWAY_IP:-192.168.15.1}

@@ -3,21 +3,30 @@
 # DNS Redirect entrypoint for Docker container
 # Runs with network_mode: host so it can ARP spoof on the physical interface
 #
+# Supports multiple cameras via comma-separated CAMERA_IPS env var:
+#   CAMERA_IPS=192.168.15.21,192.168.15.22,192.168.15.23
+#
 set -euo pipefail
 
 # ============================================================
 # Configuration from environment
 # ============================================================
-CAMERA_IP="${CAMERA_IP:?CAMERA_IP must be set}"
+CAMERA_IPS="${CAMERA_IPS:-${CAMERA_IP:-}}"
+if [ -z "$CAMERA_IPS" ]; then
+    echo "[-] CAMERA_IPS (or CAMERA_IP) must be set"
+    exit 1
+fi
 LOCAL_IP="${LOCAL_IP:?LOCAL_IP must be set}"
 IFACE="${IFACE:-eth0}"
 GATEWAY_IP="${GATEWAY_IP:-$(ip route | grep default | awk '{print $3}')}"
 
 DNSMASQ_CONF="/tmp/eoolii-dnsmasq.conf"
-DNSMASQ_LOG="/tmp/eoolii-dnsmasq.log"
 
 # Closeli domains to spoof
 SPOOF_DOMAINS="closeli.com icloseli.com closeli.cn icloseli.cn"
+
+# Parse comma-separated IPs into array
+IFS=',' read -ra CAMERAS <<< "$CAMERA_IPS"
 
 # ============================================================
 # Functions
@@ -25,6 +34,7 @@ SPOOF_DOMAINS="closeli.com icloseli.com closeli.cn icloseli.cn"
 log()  { echo "[+] $1"; }
 info() { echo "[*] $1"; }
 err()  { echo "[-] $1"; }
+warn() { echo "[!] $1"; }
 
 cleanup() {
     log "Shutting down..."
@@ -46,7 +56,7 @@ trap cleanup EXIT INT TERM
 # ============================================================
 # Main
 # ============================================================
-info "Camera:   $CAMERA_IP"
+info "Cameras:  ${CAMERAS[*]} (${#CAMERAS[@]} total)"
 info "Local IP: $LOCAL_IP ($IFACE)"
 info "Gateway:  $GATEWAY_IP"
 echo ""
@@ -56,7 +66,6 @@ sysctl -q net.ipv4.ip_forward=1 2>/dev/null || true
 log "IP forwarding: $(cat /proc/sys/net/ipv4/ip_forward)"
 
 # --- 2. Write dnsmasq config ---
-touch "$DNSMASQ_LOG"
 cat > "$DNSMASQ_CONF" <<EOF
 port=53
 listen-address=${LOCAL_IP}
@@ -68,7 +77,7 @@ server=1.1.1.1
 server=9.9.9.9
 $(for domain in $SPOOF_DOMAINS; do echo "address=/${domain}/${LOCAL_IP}"; done)
 log-queries
-log-facility=${DNSMASQ_LOG}
+log-facility=-
 EOF
 
 # Kill anything on port 53 first
@@ -88,33 +97,38 @@ else
     exit 1
 fi
 
-# --- 3. iptables rules ---
-# FORWARD: allow camera traffic through
-iptables -I FORWARD 1 -s "$CAMERA_IP" -j ACCEPT -m comment --comment "EOOLII_FWD"
-iptables -I FORWARD 1 -d "$CAMERA_IP" -j ACCEPT -m comment --comment "EOOLII_FWD"
-log "FORWARD rules added"
+# --- 3. iptables + arpspoof per camera ---
+SPOOF_PIDS=()
 
-# DNAT: redirect camera's DNS to our dnsmasq
-iptables -t nat -I PREROUTING 1 -s "$CAMERA_IP" -p udp --dport 53 \
-    -j DNAT --to-destination "${LOCAL_IP}:53" \
-    -m comment --comment "EOOLII_DNS"
-iptables -t nat -I PREROUTING 1 -s "$CAMERA_IP" -p tcp --dport 53 \
-    -j DNAT --to-destination "${LOCAL_IP}:53" \
-    -m comment --comment "EOOLII_DNS"
-log "iptables DNS redirect active"
+for cam_ip in "${CAMERAS[@]}"; do
+    # Trim whitespace
+    cam_ip="$(echo "$cam_ip" | tr -d '[:space:]')"
+    [ -z "$cam_ip" ] && continue
 
-# --- 4. ARP spoof (foreground, blocks until killed) ---
-log "Starting ARP spoof: telling $CAMERA_IP that we ($LOCAL_IP) are $GATEWAY_IP"
-info "DNS redirect active - monitoring..."
+    info "Setting up camera: $cam_ip"
+
+    # FORWARD rules
+    iptables -I FORWARD 1 -s "$cam_ip" -j ACCEPT -m comment --comment "EOOLII_FWD"
+    iptables -I FORWARD 1 -d "$cam_ip" -j ACCEPT -m comment --comment "EOOLII_FWD"
+
+    # DNAT: redirect DNS to our dnsmasq
+    iptables -t nat -I PREROUTING 1 -s "$cam_ip" -p udp --dport 53 \
+        -j DNAT --to-destination "${LOCAL_IP}:53" \
+        -m comment --comment "EOOLII_DNS"
+    iptables -t nat -I PREROUTING 1 -s "$cam_ip" -p tcp --dport 53 \
+        -j DNAT --to-destination "${LOCAL_IP}:53" \
+        -m comment --comment "EOOLII_DNS"
+
+    # ARP spoof this camera
+    arpspoof -i "$IFACE" -t "$cam_ip" "$GATEWAY_IP" > /dev/null 2>&1 &
+    SPOOF_PIDS+=($!)
+    log "ARP spoof + iptables for $cam_ip"
+done
+
+echo ""
+log "DNS redirect active for ${#CAMERAS[@]} camera(s)"
+info "Logs visible via: docker compose logs -f dns-redirect"
 echo ""
 
-# Run arpspoof in background, tail dnsmasq log in foreground
-arpspoof -i "$IFACE" -t "$CAMERA_IP" "$GATEWAY_IP" > /dev/null 2>&1 &
-ARPSPOOF_PID=$!
-
-# Keep alive by tailing the DNS log - shows what the camera is querying
-tail -f "$DNSMASQ_LOG" &
-TAIL_PID=$!
-
-# Wait for arpspoof to exit (or signal)
-wait $ARPSPOOF_PID 2>/dev/null || true
+# Wait for any arpspoof to exit (or signal kills us)
+wait "${SPOOF_PIDS[@]}" 2>/dev/null || true
