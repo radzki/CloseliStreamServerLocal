@@ -1416,7 +1416,7 @@ SERVER_START_TIME = None
 class ManagementServer:
     """Simple TCP server for CLI management commands"""
 
-    def __init__(self, host="127.0.0.1", port=MGMT_PORT):
+    def __init__(self, host=RELAY_HOST, port=MGMT_PORT):
         self.host = host
         self.port = port
         self.running = False
