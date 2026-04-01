@@ -627,7 +627,9 @@ class LocalRelayServer:
             while True:
                 # Read 4-byte header
                 header = conn.recv(4)
-                
+                if len(header) < 4:
+                    break  # Clean disconnect
+
                 msg_len = struct.unpack('>I', header)[0]
                 if msg_len > 1024*1024: # Sanity check
                     log(f"Message too large: {msg_len}", "WARNING")
@@ -682,8 +684,9 @@ class LocalRelayServer:
                                     handshake_json, _ = decoder.raw_decode(json_str)
                                     log(f"CCAM Handshake: {handshake_json}", "STREAM")
 
-                                    # Extract device_id from handshake if present
-                                    handshake_device_id = handshake_json.get('deviceId', device_id)
+                                    # Extract device_id from handshake
+                                    # Camera sends 'ipcamId', app sends 'deviceId'
+                                    handshake_device_id = handshake_json.get('ipcamId') or handshake_json.get('deviceId')
                                     if handshake_device_id:
                                         device_id = handshake_device_id
                                         conn_device_id = device_id
@@ -938,10 +941,25 @@ class LocalRelayServer:
                     xmpp_device_id = None
                     if 'data' in json_part and 'deviceId' in json_part['data']:
                         xmpp_device_id = json_part['data']['deviceId']
-                        device_id = xmpp_device_id
-                        conn_device_id = xmpp_device_id
                     elif 'deviceId' in json_part:
                         xmpp_device_id = json_part['deviceId']
+
+                    # Fallback: extract device ID from schema field (e.g. "ipc://xxxxS_189e2d438ea9")
+                    if not xmpp_device_id and 'data' in json_part:
+                        schema = json_part['data'].get('schema', '')
+                        if not schema:
+                            schemas_str = json_part['data'].get('schemas', '')
+                            if schemas_str:
+                                try:
+                                    schemas_list = json.loads(schemas_str)
+                                    if schemas_list:
+                                        schema = schemas_list[0]
+                                except: pass
+                        if schema and 'xxxxS_' in schema:
+                            xmpp_device_id = schema.split('xxxxS_', 1)[1]
+                            xmpp_device_id = 'xxxxS_' + xmpp_device_id.split('"')[0].strip()
+
+                    if xmpp_device_id:
                         device_id = xmpp_device_id
                         conn_device_id = xmpp_device_id
 
