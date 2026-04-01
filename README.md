@@ -13,81 +13,158 @@ Eoolii cameras are designed to communicate with `closeli.com` cloud servers. Thi
 ### Architecture
 
 ```
-┌─────────────┐     DNS Redirect      ┌──────────────────┐
-│   Camera    │ ──────────────────▶   │  mock_api_server │ :443
-│ 192.168.x.x │                       │  (HTTPS API)     │
-└─────────────┘                       └──────────────────┘
-       │                                      │
-       │ TLS Connection                       │ Returns local relay IP
-       ▼                                      ▼
+┌─────────────┐    ARP Spoof + DNS     ┌──────────────────┐
+│   Camera    │ ──────────────────────▶│  dns-redirect    │
+│ 192.168.x.x │   Camera thinks we     │  (dnsmasq +      │
+└─────────────┘   are the gateway,      │   arpspoof)      │
+       │          DNS spoofed to        └──────────────────┘
+       │          resolve closeli.com          │
+       │          to local IP                  │
+       ▼                                       ▼
 ┌──────────────────┐                  ┌──────────────────┐
-│ local_relay_server│ :50721 ◀────────│  Camera connects │
-│  (XMPP + CCAM)   │                  │  to local relay  │
-└──────────────────┘                  └──────────────────┘
+│ mock_api_server  │ :443             │  Camera resolves │
+│  (HTTPS API)     │◀─────────────────│  closeli.com to  │
+└──────────────────┘                  │  local server    │
+       │                              └──────────────────┘
+       │ Returns local relay IP
+       ▼
+┌──────────────────┐
+│ local_relay_server│ :50721
+│  (XMPP + CCAM)   │
+└──────────────────┘
        │
        │ Forwards video stream
        ▼
 ┌──────────────────┐
-│  stream_to_vlc   │ :8080/8081/...
+│  stream_server   │ :8081/8082/...
 │  (HTTP Server)   │
 └──────────────────┘
        │
        │ MJPEG / WAV
        ▼
 ┌──────────────────┐
-│   VLC Player     │
-│   or Browser     │
+│   VLC / Browser  │
+│   / Frigate      │
 └──────────────────┘
 ```
 
-## Requirements
+## Quick Start (Docker)
 
-- Python 3.8+
-- OpenSSL (for certificate generation)
-- VLC or any MJPEG player
-- DNS redirection capability (router or local DNS server)
-
-### Python Dependencies
+### 1. Configure `.env`
 
 ```bash
-pip install cryptography
+cp .env.example .env
+# Edit .env with your values:
+#   LOCAL_IP       - Your server's LAN IP
+#   CAMERA_IPS     - Comma-separated camera IPs
+#   GATEWAY_IP     - Your router's IP
+#   CAMERA1_DEVICE_ID - Camera device ID (format: xxxxS_<mac>)
 ```
 
-## Quick Start
-
-### 1. DNS Redirection
-
-Redirect these domains to your server IP (e.g., `192.168.15.249`):
-
-```
-*.closeli.com
-*.icloseli.com
-*.closeli.cn
-```
-
-### 2. Start the Servers
+### 2. Start Everything
 
 ```bash
-# Terminal 1: Start the mock API server (requires sudo for port 443)
-sudo python3 mock_api_server.py
-
-# Terminal 2: Start the relay server
-python3 local_relay_server.py
-
-# Terminal 3: Start the stream proxy (one per camera)
-python3 stream_to_vlc.py --device_id xxxxS_189e2d446d47 --port 8081
+docker compose up -d                          # Core services + DNS redirect
+docker compose --profile camera1 up -d        # Add camera 1 stream
 ```
+
+That's it. The `dns-redirect` container handles ARP spoofing and DNS automatically.
 
 ### 3. View the Stream
 
-Open in VLC: **Media → Open Network Stream**
+Open in VLC or browser:
 
 ```
-http://localhost:8081/camera/video
-http://localhost:8081/camera/audio
+http://<server-ip>:8081/camera/video
+http://<server-ip>:8081/camera/audio
 ```
+
+## DNS Redirect (ARP Spoofing)
+
+The cameras hardcode `8.8.8.8` as their DNS server and have no open ports for direct local access. To redirect them to the local relay, we use ARP spoofing.
+
+### How it Works
+
+1. **ARP Spoof**: The `dns-redirect` container tells each camera that our server is the default gateway. The camera's traffic now flows through us.
+2. **iptables DNAT**: DNS queries (port 53) from the cameras are redirected to a local dnsmasq instance.
+3. **dnsmasq**: Resolves `*.closeli.com` / `*.icloseli.com` to the local server IP. All other DNS queries are forwarded to `1.1.1.1` normally.
+4. **IP Forwarding**: All non-DNS camera traffic is forwarded to the real gateway, so the camera still has internet for NTP, firmware checks, etc.
+
+### Spoofed Domains
+
+| Domain | Redirected To |
+|--------|--------------|
+| `*.closeli.com` | `LOCAL_IP` |
+| `*.icloseli.com` | `LOCAL_IP` |
+| `*.closeli.cn` | `LOCAL_IP` |
+| `*.icloseli.cn` | `LOCAL_IP` |
+
+### Multiple Cameras
+
+Set comma-separated IPs in `.env`:
+
+```
+CAMERA_IPS=192.168.15.21,192.168.15.22,192.168.15.30
+```
+
+Each camera gets its own arpspoof process and iptables rules.
+
+### Docker Requirements
+
+The `dns-redirect` container requires:
+- `network_mode: host` (L2 access for ARP spoofing)
+- `NET_ADMIN` + `NET_RAW` capabilities (iptables + raw sockets)
+- IP forwarding enabled on the host (`sysctl net.ipv4.ip_forward=1`)
+
+### Manual DNS Redirect (without Docker)
+
+If you prefer to run it manually:
+
+```bash
+sudo ./dns_redirect.sh start 192.168.15.21
+sudo ./dns_redirect.sh status
+sudo ./dns_redirect.sh stop
+```
+
+### Troubleshooting DNS Redirect
+
+**Camera goes offline after starting:**
+- Check `sysctl net.ipv4.ip_forward` is `1`
+- Check iptables FORWARD chain isn't dropping camera traffic:
+  ```bash
+  sudo iptables -L FORWARD -n -v | head -10
+  ```
+- If FORWARD policy is DROP (e.g. Docker), the container adds ACCEPT rules automatically
+
+**No DNS queries from camera:**
+- Camera may have cached DNS. Reboot the camera.
+- Camera may have changed IP after reboot. Check your router's DHCP leases and update `CAMERA_IPS`.
+
+**Docker build fails with DNS errors:**
+- Stop dns-redirect first, restart Docker, then rebuild:
+  ```bash
+  docker compose down
+  sudo systemctl restart docker
+  docker compose build
+  ```
+
+## Requirements
+
+- Docker and Docker Compose
+- OpenSSL certificates (`server.crt`, `server.key`)
+- Host with IP forwarding enabled
+
+### Without Docker
+
+- Python 3.8+
+- `dnsmasq`, `dsniff` (arpspoof), `iptables`
+- VLC or any MJPEG player
 
 ## Components
+
+### `dns_redirect_entrypoint.sh`
+
+Docker entrypoint for the `dns-redirect` container. Runs dnsmasq + arpspoof and sets up iptables rules. Cleans up on container stop.
 
 ### `local_relay_server.py`
 
@@ -102,33 +179,19 @@ The main relay server that handles camera connections. Emulates the Closeli clou
 - CCAM media stream forwarding
 - Automatic device identification
 
-### `stream_to_vlc.py`
+### `stream_server.py`
 
 Connects to the relay as an "app" and serves video/audio over HTTP.
 
 ```bash
-python3 stream_to_vlc.py [OPTIONS]
+python3 stream_server.py [OPTIONS]
 
 Options:
   -d, --device_id    Camera device ID to connect to
   -p, --port         HTTP server port (default: 8080)
-  -r, --relay_host   Relay server host (default: 192.168.15.249)
+  -r, --relay_host   Relay server host (default: 127.0.0.1)
   --relay_port       Relay server port (default: 50721)
-  -e, --email        User email for auth (default: configured email)
-```
-
-**Examples:**
-
-```bash
-# Single camera (default settings)
-python3 stream_to_vlc.py
-
-# Multiple cameras on different ports
-python3 stream_to_vlc.py --device_id xxxxS_camera1 --port 8081
-python3 stream_to_vlc.py --device_id xxxxS_camera2 --port 8082
-
-# Custom relay server
-python3 stream_to_vlc.py --relay_host 192.168.1.100 --relay_port 50721
+  -e, --email        User email for auth
 ```
 
 ### `mock_api_server.py`
@@ -160,62 +223,28 @@ Commands:
   set-device  Manually assign device_id to an IP
 ```
 
-**Examples:**
-
-```bash
-# See all connected cameras
-python3 relay_cli.py list
-
-# Check server status
-python3 relay_cli.py status
-
-# Manually assign a device ID to a camera IP
-python3 relay_cli.py set-device 192.168.25.64 xxxxS_189e2d446d47
-
-# Get details for a specific device
-python3 relay_cli.py info xxxxS_189e2d446d47
-```
-
 ## Multi-Camera Setup
 
-### Step 1: Check Connected Cameras
+### 1. Configure `.env`
 
-```bash
-$ python3 relay_cli.py list
-
-IP Address         Connections  Device ID                 Uptime
------------------------------------------------------------------
-192.168.25.64      1            (unidentified)            5m 30s
-192.168.15.39      1            (unidentified)            5m 28s
-
-Total: 2 camera(s), 2 connection(s)
+```env
+CAMERA_IPS=192.168.15.21,192.168.15.22
+CAMERA1_DEVICE_ID=xxxxS_189e2d5b3216
+CAMERA2_DEVICE_ID=xxxxS_189e2d446d47
 ```
 
-### Step 2: Assign Device IDs
-
-If cameras show as "(unidentified)", assign their device IDs:
+### 2. Start Services
 
 ```bash
-python3 relay_cli.py set-device 192.168.25.64 xxxxS_189e2d446d47
-python3 relay_cli.py set-device 192.168.15.39 xxxxS_189e2d438ea9
+docker compose --profile camera1 --profile camera2 up -d
 ```
 
-### Step 3: Start Stream Proxies
+### 3. View Streams
 
-```bash
-# Terminal for Camera 1
-python3 stream_to_vlc.py -d xxxxS_189e2d446d47 -p 8081
-
-# Terminal for Camera 2
-python3 stream_to_vlc.py -d xxxxS_189e2d438ea9 -p 8082
-```
-
-### Step 4: View Streams
-
-| Camera | Video URL | Audio URL |
-|--------|-----------|-----------|
-| Camera 1 | `http://localhost:8081/camera/video` | `http://localhost:8081/camera/audio` |
-| Camera 2 | `http://localhost:8082/camera/video` | `http://localhost:8082/camera/audio` |
+| Camera | Video | Audio |
+|--------|-------|-------|
+| Camera 1 | `http://server:8081/camera/video` | `http://server:8081/camera/audio` |
+| Camera 2 | `http://server:8082/camera/video` | `http://server:8082/camera/audio` |
 
 ## Protocol Details
 
@@ -246,57 +275,24 @@ Video and audio are transmitted using the CCAM protocol.
 **Video Format:** MJPEG (Motion JPEG), unencrypted
 **Audio Format:** G.711 A-law (PCMA), 8000 Hz, mono
 
-## Troubleshooting
-
-### Camera not connecting
-
-1. Verify DNS redirection is working:
-   ```bash
-   nslookup auto-link.closeli.com
-   # Should return your server IP
-   ```
-
-2. Check mock_api_server is running on port 443
-
-3. Verify certificates are in place (`server.crt`, `server.key`)
-
-### No video stream
-
-1. Check relay server logs for connection errors
-
-2. Verify camera is registered:
-   ```bash
-   python3 relay_cli.py list
-   ```
-
-3. Try triggering the stream manually via the app
-
-### Device shows as "(unidentified)"
-
-Cameras that were already configured before the relay started won't re-send their device ID. Manually assign it:
-
-```bash
-python3 relay_cli.py set-device <camera_ip> <device_id>
-```
-
 ## File Structure
 
 ```
 .
-├── local_relay_server.py   # Main relay server
-├── stream_to_vlc.py        # Stream proxy for VLC
-├── mock_api_server.py      # Mock HTTPS API server
-├── relay_cli.py            # CLI management tool
-├── server.crt              # TLS certificate
-├── server.key              # TLS private key
-└── README.md               # This file
+├── docker-compose.yml            # Docker Compose services
+├── Dockerfile                    # Main app image
+├── Dockerfile.dns-redirect       # DNS redirect image (dnsmasq + arpspoof)
+├── dns_redirect_entrypoint.sh    # DNS redirect container entrypoint
+├── local_relay_server.py         # Main relay server
+├── stream_server.py              # Stream proxy (HTTP MJPEG/WAV)
+├── mock_api_server.py            # Mock HTTPS API server
+├── relay_cli.py                  # CLI management tool
+├── server.crt                    # TLS certificate
+├── server.key                    # TLS private key
+├── .env                          # Configuration
+└── README.md                     # This file
 ```
 
 ## License
 
 This project is for educational and research purposes only. Use responsibly and only on devices you own.
-
-## Acknowledgments
-
-This project was developed through reverse engineering of the Eoolii camera protocol. Special thanks to the security research community for tools and techniques that made this possible.
-
