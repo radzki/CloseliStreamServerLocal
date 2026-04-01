@@ -54,6 +54,12 @@ if not os.path.isabs(SERVER_KEY):
 # Default Device ID if not parsed
 DEFAULT_DEVICE_ID = os.environ.get("DEFAULT_DEVICE_ID", "xxxxS_000000000000")
 
+# Known camera IPs (from CAMERA_IPS or CAMERA_IP env var, comma-separated)
+CAMERA_IPS = set()
+_cam_ips_str = os.environ.get("CAMERA_IPS", os.environ.get("CAMERA_IP", ""))
+if _cam_ips_str:
+    CAMERA_IPS = {ip.strip() for ip in _cam_ips_str.split(",") if ip.strip()}
+
 # Debug Flag
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
 
@@ -627,7 +633,9 @@ class LocalRelayServer:
             while True:
                 # Read 4-byte header
                 header = conn.recv(4)
-                
+                if len(header) < 4:
+                    break  # Clean disconnect
+
                 msg_len = struct.unpack('>I', header)[0]
                 if msg_len > 1024*1024: # Sanity check
                     log(f"Message too large: {msg_len}", "WARNING")
@@ -682,8 +690,9 @@ class LocalRelayServer:
                                     handshake_json, _ = decoder.raw_decode(json_str)
                                     log(f"CCAM Handshake: {handshake_json}", "STREAM")
 
-                                    # Extract device_id from handshake if present
-                                    handshake_device_id = handshake_json.get('deviceId', device_id)
+                                    # Extract device_id from handshake
+                                    # Camera sends 'ipcamId', app sends 'deviceId'
+                                    handshake_device_id = handshake_json.get('ipcamId') or handshake_json.get('deviceId')
                                     if handshake_device_id:
                                         device_id = handshake_device_id
                                         conn_device_id = device_id
@@ -694,6 +703,25 @@ class LocalRelayServer:
                                     # Legacy registry for backward compatibility
                                     CLIENT_REGISTRY["camera_stream"] = conn
                                     log(f"Registered CAMERA Stream for {device_id}", "STREAM")
+
+                                    # Auto-discover camera_control: find unidentified connection from same IP
+                                    # This handles the case where the camera reconnects after relay restart
+                                    # and skips UDI/GDL (only sends heartbeats on control + CCAM handshake on stream)
+                                    session = get_session(device_id)
+                                    if session and not session.get('camera_control'):
+                                        try:
+                                            cam_ip = conn.getpeername()[0]
+                                        except:
+                                            cam_ip = None
+                                        if cam_ip:
+                                            with CONNECTIONS_LOCK:
+                                                for cid, cinfo in CONNECTIONS.items():
+                                                    if cinfo['ip'] == cam_ip and cinfo['socket'] != conn and cinfo['role'] is None:
+                                                        register_socket(cinfo['socket'], device_id, 'camera_control')
+                                                        CLIENT_REGISTRY["camera"] = cinfo['socket']
+                                                        CLIENT_REGISTRY["camera_control"] = cinfo['socket']
+                                                        log(f"Auto-discovered camera_control for {device_id} from {cid}", "STREAM")
+                                                        break
                                     
                                     # Build response: {"pingSpan":20,"useProtocols":"TLS_MSG_MEDIA_V2"}
                                     resp_json = json.dumps({
@@ -718,7 +746,32 @@ class LocalRelayServer:
                                     
                                     conn.sendall(resp_pkt)
                                     log(f"Sent CCAM Handshake Response ({len(resp_pkt)} bytes)", "STREAM")
-                                    
+
+                                    # If app is already waiting, send 0xBC trigger now
+                                    # This handles the race where LIVE_VIEW fired before camera stream was ready
+                                    session = get_session(device_id)
+                                    app_stream = session.get('app_stream') if session else CLIENT_REGISTRY.get("app_stream")
+                                    if app_stream:
+                                        try:
+                                            app_info = session.get('app_login_info') if session else CLIENT_REGISTRY.get("app_login_info", {})
+                                            time.sleep(0.2)
+                                            trigger = build_ccam_trigger(app_info or {})
+                                            conn.sendall(trigger)
+                                            log(f"Sent 0xBC Start Streaming to camera (app was waiting)", "STREAM")
+
+                                            # Also send XMPP trigger if we have camera_control
+                                            cam_ctrl = session.get('camera_control') if session else CLIENT_REGISTRY.get("camera_control")
+                                            if cam_ctrl:
+                                                session_client_id = "ANDRC_14716d80f38f"
+                                                timeline_query = build_xmpp_timeline_query(session_client_id)
+                                                cam_ctrl.sendall(timeline_query)
+                                                time.sleep(0.04)
+                                                short_ack_mitm = bytes.fromhex("0000000f0807420b0800101048e0d403709875")
+                                                cam_ctrl.sendall(short_ack_mitm)
+                                                log(f"Sent XMPP trigger (Timeline+Ack) on CCAM handshake", "STREAM")
+                                        except Exception as e:
+                                            log(f"Failed to send 0xBC on handshake: {e}", "ERROR")
+
                                 except Exception as e:
                                     log(f"CCAM Handshake parse error: {e}", "ERROR")
                             continue
@@ -938,10 +991,25 @@ class LocalRelayServer:
                     xmpp_device_id = None
                     if 'data' in json_part and 'deviceId' in json_part['data']:
                         xmpp_device_id = json_part['data']['deviceId']
-                        device_id = xmpp_device_id
-                        conn_device_id = xmpp_device_id
                     elif 'deviceId' in json_part:
                         xmpp_device_id = json_part['deviceId']
+
+                    # Fallback: extract device ID from schema field (e.g. "ipc://xxxxS_189e2d438ea9")
+                    if not xmpp_device_id and 'data' in json_part:
+                        schema = json_part['data'].get('schema', '')
+                        if not schema:
+                            schemas_str = json_part['data'].get('schemas', '')
+                            if schemas_str:
+                                try:
+                                    schemas_list = json.loads(schemas_str)
+                                    if schemas_list:
+                                        schema = schemas_list[0]
+                                except: pass
+                        if schema and 'xxxxS_' in schema:
+                            xmpp_device_id = schema.split('xxxxS_', 1)[1]
+                            xmpp_device_id = 'xxxxS_' + xmpp_device_id.split('"')[0].strip()
+
+                    if xmpp_device_id:
                         device_id = xmpp_device_id
                         conn_device_id = xmpp_device_id
 
@@ -1050,6 +1118,15 @@ class LocalRelayServer:
                         if not cam_ctrl:
                             cam_ctrl = CLIENT_REGISTRY.get("camera_control")
 
+                        # Fallback: find unidentified connection from a known camera IP
+                        if not cam_ctrl and CAMERA_IPS:
+                            with CONNECTIONS_LOCK:
+                                for cid, cinfo in CONNECTIONS.items():
+                                    if cinfo['ip'] in CAMERA_IPS and cinfo.get('role') is None and cinfo.get('socket'):
+                                        cam_ctrl = cinfo['socket']
+                                        log(f"Using unidentified connection from camera IP {cinfo['ip']} as control fallback", "STREAM")
+                                        break
+
                         # Use EXACT clientID from successful MITM capture
                         session_client_id = "ANDRC_14716d80f38f"
                         log(f"Using Client ID: {session_client_id} for device {lv_device_id}", "INFO")
@@ -1101,7 +1178,30 @@ class LocalRelayServer:
                                 cam_ctrl.sendall(short_ack_mitm)
                                 log(f"Sent EXACT MITM Short Ack ({len(short_ack_mitm)} bytes)", "XMPP")
                                 log(f"Short Ack HEX: {short_ack_mitm.hex()}", "DEBUG")
-                                
+
+                                # 3. Send 0xBC CCAM trigger
+                                # Try camera stream first, fall back to camera control
+                                cam_stream = None
+                                if session:
+                                    cam_stream = session.get('camera_stream')
+                                if not cam_stream:
+                                    cam_stream = CLIENT_REGISTRY.get("camera_stream")
+
+                                trigger_target = cam_stream or cam_ctrl
+                                if trigger_target:
+                                    time.sleep(0.1)
+                                    app_info = {}
+                                    if session:
+                                        app_info = session.get('app_login_info') or {}
+                                    if not app_info:
+                                        app_info = CLIENT_REGISTRY.get("app_login_info", {})
+                                    trigger = build_ccam_trigger(app_info)
+                                    trigger_target.sendall(trigger)
+                                    target_type = "camera_stream" if trigger_target == cam_stream else "camera_control"
+                                    log(f"Sent 0xBC Start Streaming via {target_type} for {lv_device_id}", "STREAM")
+                                else:
+                                    log(f"No target for 0xBC trigger (no stream or control)", "WARN")
+
                             except Exception as e:
                                 log(f"Failed to send Trigger Sequence: {e}", "ERROR")
                         else:
@@ -1197,15 +1297,16 @@ class LocalRelayServer:
         finally:
             log(f"Connection closed: {conn_id} (device: {conn_device_id}, role: {conn_role})", "INFO")
 
-            # STOP STREAM ON DISCONNECT
-            # If an App Stream disconnects, FORCE CLOSE the Camera Stream socket.
-            # This is the only reliable way to stop the camera from pumping video (GOP logs).
-            # The camera will detect the disconnect and reconnect in Idle mode.
+            # APP STREAM DISCONNECT
+            # Don't force-close camera stream - the stream server will reconnect quickly
+            # (e.g. when Frigate restarts) and the camera takes a long time to re-establish CCAM.
+            # Just let the camera keep its stream connection alive. Video frames will be
+            # dropped (no app_stream target) until the stream server reconnects.
             if conn_role == 'app_stream' and conn_device_id:
-                session = get_session(conn_device_id)
-                cam_stream_sock = session.get('camera_stream') if session else CLIENT_REGISTRY.get("camera_stream")
-                
-                if cam_stream_sock:
+                log(f"App stream disconnected for {conn_device_id} - camera stream kept alive", "STREAM")
+                cam_stream_sock = None  # Skip force-close
+
+                if False and cam_stream_sock:  # Disabled: was force-closing camera stream
                     try:
                         log(f"Force closing Camera Stream for {conn_device_id} to stop video...", "STREAM")
                         cam_stream_sock.shutdown(socket.SHUT_RDWR)
@@ -1848,6 +1949,166 @@ class ManagementServer:
                 "device_id": effective_device_id,
                 "target": ip if ip else device_id,
                 "message": f"Reboot command sent to {len(candidate_sockets)} socket(s): {', '.join(results)}"
+            }
+
+        elif command == "ptz":
+            # Send PTZ command to camera
+            # Uses Request_Set (1793) with Subrequest_LensPan (5), LensTilt (6), LensZoom (7)
+            device_id = params.get('device_id')
+            ip = params.get('ip')
+            direction = params.get('direction', '').lower()
+            action = params.get('action', 'move')  # 'move' or 'stop'
+
+            # Continuous move uses subRequest=82 (LensPanContinue)
+            # Step move uses subRequest=5 (LensPan) with {"value": dir, "step": N}
+            # Values: left=1, right=2, up=3, down=4, stop=0
+            PTZ_DIRECTIONS = {
+                'left':  1,
+                'right': 2,
+                'up':    3,
+                'down':  4,
+                'stop':  0,
+                'zoomin':  1,
+                'zoomout': -1,
+            }
+            PTZ_ZOOM = {'zoomin', 'zoomout'}
+
+            duration_ms = params.get('duration', 0)
+
+            if action == 'stop':
+                direction = 'stop'
+
+            if direction not in PTZ_DIRECTIONS:
+                return {"error": f"Invalid direction: '{direction}'. Valid: {', '.join(PTZ_DIRECTIONS.keys())}"}
+
+            if not device_id and not ip:
+                return {"error": "Either 'device_id' or 'ip' parameter required"}
+
+            # Find camera control socket (same logic as reboot)
+            cam_ctrl = None
+            if device_id:
+                session = get_session(device_id)
+                if session:
+                    cam_ctrl = session.get('camera_control')
+
+            candidate_sockets = []
+            if cam_ctrl:
+                candidate_sockets.append(cam_ctrl)
+            elif ip:
+                with CONNECTIONS_LOCK:
+                    for conn_id, info in CONNECTIONS.items():
+                        if info.get('ip') == ip and info.get('socket'):
+                            role = info.get('role')
+                            if role == 'camera_control':
+                                candidate_sockets = [info['socket']]
+                                break
+                            elif role == 'camera_stream':
+                                continue
+                            else:
+                                candidate_sockets.append(info['socket'])
+
+            if not candidate_sockets:
+                return {"error": f"No camera connection found for device_id={device_id} ip={ip}"}
+
+            effective_device_id = device_id or DEFAULT_DEVICE_ID
+
+            import random
+
+            ptz_value = PTZ_DIRECTIONS[direction]
+
+            if direction in PTZ_ZOOM:
+                sub_request = 7  # LensZoom
+                request_params = {"value": ptz_value}
+            else:
+                sub_request = 82  # LensPanContinue (continuous move)
+                request_params = {"value": ptz_value}
+
+            ptz_payload = {
+                "msgSession": random.randint(1000000000, 2000000000),
+                "msgTimeStamp": int(time.time() * 1000),
+                "msgSequence": 0,
+                "msgContent": {
+                    "request": 1793,
+                    "subRequest": sub_request,
+                    "channelName": "720p",
+                    "requestParams": request_params
+                },
+                "msgCategory": "camera"
+            }
+
+            payload_bytes = json.dumps(ptz_payload, separators=(',', ':')).encode('utf-8')
+            device_id_bytes = effective_device_id.encode('utf-8')
+
+            inner = b'\x08\x00'
+            inner += b'\x10\x21'
+            inner += b'\x1a' + encode_varint(len(device_id_bytes)) + device_id_bytes
+            inner += b'\x20\x00'
+            inner += b'\x32' + encode_varint(len(payload_bytes)) + payload_bytes
+
+            outer = b'\x08\x07'
+            outer += b'\x42' + encode_varint(len(inner)) + inner
+
+            packet = struct.pack('>I', len(outer)) + outer
+
+            def _build_ptz_packet(ptz_json, dev_id_bytes):
+                pb = ptz_json.encode('utf-8')
+                inn = b'\x08\x00'
+                inn += b'\x10\x21'
+                inn += b'\x1a' + encode_varint(len(dev_id_bytes)) + dev_id_bytes
+                inn += b'\x20\x00'
+                inn += b'\x32' + encode_varint(len(pb)) + pb
+                out = b'\x08\x07'
+                out += b'\x42' + encode_varint(len(inn)) + inn
+                return struct.pack('>I', len(out)) + out
+
+            results = []
+            for sock in candidate_sockets:
+                try:
+                    peer = sock.getpeername()
+                    peer_str = f"{peer[0]}:{peer[1]}"
+                    sock.sendall(packet)
+                    log(f"Sent PTZ {direction} to {peer_str} (device: {effective_device_id})", "XMPP")
+                    results.append(f"Sent to {peer_str}")
+
+                    # Auto-stop after duration
+                    if duration_ms > 0 and direction != 'stop':
+                        def _delayed_stop(s, dur, dev_bytes):
+                            time.sleep(dur / 1000.0)
+                            stop_payload = {
+                                "msgSession": random.randint(1000000000, 2000000000),
+                                "msgTimeStamp": int(time.time() * 1000),
+                                "msgSequence": 0,
+                                "msgContent": {
+                                    "request": 1793,
+                                    "subRequest": 82,
+                                    "channelName": "720p",
+                                    "requestParams": {"value": 0}
+                                },
+                                "msgCategory": "camera"
+                            }
+                            stop_pkt = _build_ptz_packet(json.dumps(stop_payload, separators=(',', ':')), dev_bytes)
+                            try:
+                                s.sendall(stop_pkt)
+                                log(f"PTZ auto-stop after {dur}ms", "XMPP")
+                            except Exception as e:
+                                log(f"PTZ auto-stop failed: {e}", "ERROR")
+
+                        threading.Thread(
+                            target=_delayed_stop,
+                            args=(sock, duration_ms, device_id_bytes),
+                            daemon=True
+                        ).start()
+                        results[-1] += f" (auto-stop in {duration_ms}ms)"
+
+                except Exception as e:
+                    results.append(f"Failed: {e}")
+
+            return {
+                "status": "ok",
+                "device_id": effective_device_id,
+                "direction": direction,
+                "duration_ms": duration_ms,
+                "message": f"PTZ {direction} sent: {', '.join(results)}"
             }
 
         else:

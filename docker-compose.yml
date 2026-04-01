@@ -52,6 +52,7 @@ services:
       - LOCAL_IP=${LOCAL_IP:-192.168.1.100}
       - RELAY_PORT=50721
       - MGMT_PORT=50722
+      - CAMERA_IPS=${CAMERA_IPS:-}
       - DEBUG_MODE=${DEBUG_MODE:-false}
     healthcheck:
       test: [ "CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 50722)); s.close()" ]

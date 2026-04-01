@@ -638,18 +638,31 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
             print("[HTTP] Client connected to VIDEO stream")
+            last_frame_id = None
+            no_data_count = 0
             try:
                 while True:
                     with video_lock:
                         frame = latest_video_frame
-                    
+
                     if frame:
-                        self.wfile.write(b'--frame\r\n')
-                        self.wfile.write(b'Content-Type: image/jpeg\r\n')
-                        self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode())
-                        self.wfile.write(frame)
-                        self.wfile.write(b'\r\n')
-                    
+                        # Only send if it's a new frame (avoid sending duplicates)
+                        frame_id = id(frame)
+                        if frame_id != last_frame_id:
+                            self.wfile.write(b'--frame\r\n')
+                            self.wfile.write(b'Content-Type: image/jpeg\r\n')
+                            self.wfile.write(f'Content-Length: {len(frame)}\r\n\r\n'.encode())
+                            self.wfile.write(frame)
+                            self.wfile.write(b'\r\n')
+                            last_frame_id = frame_id
+                            no_data_count = 0
+                    else:
+                        no_data_count += 1
+                        # If no frames for ~10 seconds, close connection so client retries
+                        if no_data_count > 300:  # 300 * 0.033s ≈ 10s
+                            print("[HTTP] No video data for 10s, closing connection to force client retry")
+                            break
+
                     time.sleep(0.033) # 30 FPS cap
             except:
                 print("[HTTP] Video client disconnected")

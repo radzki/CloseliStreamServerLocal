@@ -361,6 +361,29 @@ def cmd_debug(client, args):
     return 0
 
 
+def cmd_ptz(client, args):
+    """Send PTZ command to a camera"""
+    params = {}
+
+    if args.target.count('.') == 3:
+        params['ip'] = args.target
+    else:
+        params['device_id'] = args.target
+
+    params['direction'] = args.direction
+    if args.duration:
+        params['duration'] = args.duration
+
+    response = client.send_command("ptz", params)
+
+    if "error" in response:
+        print(f"Error: {response['error']}")
+        return 1
+
+    print(f"PTZ {args.direction}: {response.get('message', 'OK')}")
+    return 0
+
+
 def cmd_reboot(client, args):
     """Send reboot command to a camera"""
     params = {}
@@ -463,6 +486,14 @@ Examples:
     reboot_parser.add_argument('target', help='Device ID or IP address of the camera')
     reboot_parser.add_argument('-f', '--force', action='store_true', help='Skip confirmation prompt')
 
+    # ptz command - PTZ control
+    ptz_parser = subparsers.add_parser('ptz', help='PTZ camera control')
+    ptz_parser.add_argument('target', help='Device ID or IP address of the camera')
+    ptz_parser.add_argument('direction', choices=['left', 'right', 'up', 'down', 'stop', 'zoomin', 'zoomout'],
+                           help='PTZ direction')
+    ptz_parser.add_argument('-t', '--duration', type=int, default=0,
+                           help='Duration in ms, then auto-stop (0 = continuous until manual stop)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -482,6 +513,7 @@ Examples:
         'trigger': cmd_trigger,
         'debug': cmd_debug,
         'reboot': cmd_reboot,
+        'ptz': cmd_ptz,
     }
 
     return commands[args.command](client, args)
