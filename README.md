@@ -2,6 +2,8 @@
 
 A reverse-engineered local streaming solution for Eoolii/Closeli IP cameras. This project bypasses the cloud dependency and enables fully local, peer-to-peer streaming without internet access.
 
+If you are only looking for a client to intercept the camera stream, you might be interested in https://github.com/radzki/CloseliStreamServerRemote
+
 ## Overview
 
 Eoolii cameras are designed to communicate with `closeli.com` cloud servers. This project intercepts and emulates that communication, allowing you to:
